@@ -11,6 +11,11 @@ module.exports = {
         const password = readlineSync.question('password: ', { hideEchoBack: true, mask: '*'});
         const passwordConfirm = readlineSync.question('password confirm: ', { hideEchoBack: true, mask: '*'});
 
+        if (password != passwordConfirm) {
+            console.log('[ERROR] 비밀번호가 일치하지 않습니다.');
+            return;
+        }
+
         await keytar.setPassword('lms-console', "username", username);
         await keytar.setPassword('lms-console', "password", password);
         
