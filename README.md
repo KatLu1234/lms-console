@@ -16,6 +16,7 @@ window 터미널에서 다음 명령어를 실행
 npm이 설치되었다면, repository 폴더에 들어가서 다음 명령어를 입력
 
 `npm install`
+
 `npm install -g .`
 
 
