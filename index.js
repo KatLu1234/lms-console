@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-require('dotenv').config();
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
 const readline = require('readline');
@@ -54,6 +53,7 @@ class LMSConsole {
     }));
     this.config = new Conf({ projectName: 'lms-console' });
     this.studentNumber = "";
+    this.coursesCache = null;
   }
 
   async login(username, password) {
@@ -200,6 +200,17 @@ class LMSConsole {
                 console.error('[Error] 로그인 실패: ', error.message);
                 if (error.response) console.log('에러 상태 코드:', error.response.status);
             }
+  }
+
+  async getCourses() {
+    try {
+      if (this.coursesCache) return this.coursesCache;
+      const response = await this.client.get("https://mylms.korea.ac.kr/api/v1/users/self/favorites/courses?include[]=term&exclude[]=enrollments&sort=nickname");
+      this.coursesCache = response.data;
+      return response.data;
+    } catch (error) {
+      console.log("[ERROR] " + error.message);
+    }
   }
 
   async requestLearningXApi(method, path, params = {}) {
