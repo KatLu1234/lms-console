@@ -10,8 +10,7 @@ module.exports = {
         const startDate = now.toISOString();      
         
         try {
-            const response = await lms.client.get("https://mylms.korea.ac.kr/api/v1/users/self/favorites/courses?include[]=term&exclude[]=enrollments&sort=nickname");
-            const data = response.data;
+            const data = await lms.getCourses();
 
             const courses = data.map(course => ({
                 ID: course.id,

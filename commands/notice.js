@@ -12,72 +12,80 @@ const formatDate = (isoString) => {
 
 module.exports = {
     name: "notice",
-    help: "usage: notice <course id or nickname> <notice id>",
+    help: "usage: notice <course=(id or nickname)> <notice=(notice id)>",
     async execute(lms, args) {
-        let [courseIdOrNickname, noticeId] = args;
-        if (!lms.isLoggedIn()) {
-            console.log("\x1b[31m[ERROR] 로그인이 필요합니다.\x1b[0m");
-            return;
-        }
+        
+        const params = {};
+        args.forEach(x => {
+            const sliced = x.split("=");
+            params[sliced[0]] = sliced[1];
+        });
 
-        // 별칭 리스트에서 ID 찾기 또는 직접 입력받은 ID 사용
-        const nicknameList = lms.config.get("nicknameList") || [];
-        const courseId = nicknameList.find(item => item.name === courseIdOrNickname)?.id || courseIdOrNickname;
-
-        if (!courseId) {
-            console.log("\x1b[31m[ERROR] 강의 ID 또는 별칭을 입력해주세요.\x1b[0m");
-            return;
-        }
+        const courseIdOrNickname = params["course"];
+        const picked = (lms.config.get("nicknameList") || []).find(x => x.name === courseIdOrNickname);
+        const courseId = (picked) ? picked.id : courseIdOrNickname;
+        let announcements = [];
 
         try {
-            const url = `https://mylms.korea.ac.kr/api/v1/courses/${courseId}/discussion_topics?only_announcements=true&per_page=40&page=1&filter_by=all&no_avatar_fallback=1&include%5B%5D=sections_user_count&include%5B%5D=sections`;
-            const response = await lms.client.get(url);
-            const announcements = response.data;
 
-            if (!announcements || announcements.length === 0) {
-                console.log("\x1b[33m[LOG] 공지사항이 없습니다.\x1b[0m");
-                return;
-            }
-
-            if (noticeId) {
-                console.log(noticeId);
-                const notice = announcements.find(item => item.id === Number(noticeId));
-                if (!notice) {
-                    console.log("\x1b[31m[ERROR] 공지사항을 찾을 수 없습니다.\x1b[0m");
+            if (params.notice) {
+                if (this.announcementsCache) {
+                    const announcement = this.announcementsCache.find(x => x.id === Number(params.notice));
+                    
+                    console.log(announcement.title);
+                    console.log("\n" + "-".repeat(70) + "\n");
+                    console.log(announcement.message.replace(/<[^>]*>?/gm, ''));
+                    console.log();
                     return;
                 }
-
-                const date = formatDate(notice.posted_at || notice.created_at);
-                const author = notice.author?.display_name || "알 수 없음";
-                const title = notice.title;
-                const message = cheerio.load(notice.message).text();
-
-                console.log(title);
-                console.log("\n" + "─".repeat(80) + "\n");
-                console.log(message);
-                console.log("\n" + "─".repeat(80) + "\n");
-                console.log();
-
-                return;
+                else console.log("[LOG] 구현안됨");
             }
 
-            console.log(`\n=== 📢 공지사항 목록 (최근 ${announcements.length}개) ===\n`);
+            const allCourses = await lms.getCourses();
+            const courseMap = {};
+            allCourses.forEach(c => courseMap[`course_${c.id}`] = c.name);
 
-            announcements.forEach(item => {
-                const date = formatDate(item.posted_at || item.created_at);
-                const author = item.author?.display_name || "알 수 없음";
-                const title = item.title.length > 40 ? item.title.substring(0, 37) + "..." : item.title;
-                const unread = item.read_state === 'unread' ? "\x1b[31m●\x1b[0m" : " ";
-                const id = item.id;
+            let searchParams = new URLSearchParams({
+                "per_page": "10",
+                "page": "1",
+                "start_date": "1900-01-01",
+                "end_date": (new Date()).toISOString()
+            }).toString();
 
-                // 한 줄 출력: [상태] [ID] 날짜 | 작성자 | 제목
-                console.log(`${unread} [${id}] \x1b[2m${date}\x1b[0m | \x1b[33m${author.substring(0, 10).padEnd(10)}\x1b[0m | ${title}`);
-            });
+            if (courseId) {
+                searchParams += `&context_codes[]=course_${courseId}`;
+            }
+            else {
+                allCourses.forEach(x => searchParams += `&context_codes[]=course_${x.id}`);
+            }
 
-            console.log("\n" + "─".repeat(80) + "\n");
+            const response = await lms.client.get("https://mylms.korea.ac.kr/api/v1/announcements?" + searchParams);
+            announcements = response.data;
 
-        } catch (error) {
-            console.log("\x1b[31m[ERROR] " + error.message + "\x1b[0m");
-        }
-    }
+            this.announcementsCache = announcements;
+
+            if (announcements.length === 0) {
+                console.log("\x1b[33m[INFO]\x1b[0m No announcements found.");
+            } else {
+                console.log("\n\x1b[1m\x1b[36m" + "=".repeat(120) + "\x1b[0m");
+                console.log("\x1b[1m\x1b[36m   ID       | STATUS | COURSE NAME          | TITLE                                              | AUTHOR     | DATE\x1b[0m");
+                console.log("\x1b[1m\x1b[36m" + "=".repeat(120) + "\x1b[0m");
+
+                announcements.forEach((announcement) => {
+                    const isNew = announcement.read_state === 'unread';
+                    const status = isNew ? "\x1b[41m\x1b[37m NEW \x1b[0m" : "     ";
+                    const date = formatDate(announcement.posted_at);
+                    const courseName = (courseMap[announcement.context_code] || "Unknown").substring(0, 20).padEnd(20);
+                    const title = announcement.title.length > 50 ? announcement.title.substring(0, 47) + "..." : announcement.title.padEnd(50);
+                    const author = (announcement.user_name || "Unknown").substring(0, 10).padEnd(10);
+                    const aid = announcement.id.toString().padEnd(8);
+
+                    console.log(`\x1b[90m${aid}\x1b[0m | ${status} | \x1b[33m${courseName}\x1b[0m | \x1b[1m${title}\x1b[0m | \x1b[32m${author}\x1b[0m | \x1b[90m${date}\x1b[0m`);
+                });
+                console.log("\x1b[1m\x1b[36m" + "=".repeat(120) + "\x1b[0m\n");
+            }
+            } catch (error) {
+                console.log("[ERROR] " + error.message);
+            }
+        } 
 }
