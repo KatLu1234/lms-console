@@ -1,91 +1,47 @@
-const cheerio = require('cheerio');
 
-const formatDate = (isoString) => {
-    if (!isoString) return "-";
-    const date = new Date(isoString);
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    const h = String(date.getHours()).padStart(2, '0');
-    const i = String(date.getMinutes()).padStart(2, '0');
-    return `${m}/${d} ${h}:${i}`;
-};
 
 module.exports = {
     name: "notice",
-    help: "usage: notice <course=(id or nickname)> <notice=(notice id)>",
+    help: "usage : notice [notice id (optional)]",
     async execute(lms, args) {
-        
-        const params = {};
-        args.forEach(x => {
-            const sliced = x.split("=");
-            params[sliced[0]] = sliced[1];
-        });
-
-        const courseIdOrNickname = params["course"];
-        const picked = (lms.config.get("nicknameList") || []).find(x => x.name === courseIdOrNickname);
-        const courseId = (picked) ? picked.id : courseIdOrNickname;
-        let announcements = [];
-
         try {
+            const courses = await lms.getCourses();
+            let url = "learningx_total_board/announcements?page=1&enrollment_type=learning&";
+            courses.forEach(x => url += `course_ids[]=${x.id}&`)
+            
+            const data = await lms.requestLearningXApi(url);
+            const items = data.items;
 
-            if (params.notice) {
-                if (this.announcementsCache) {
-                    const announcement = this.announcementsCache.find(x => x.id === Number(params.notice));
-                    
-                    console.log(announcement.title);
-                    console.log("\n" + "-".repeat(70) + "\n");
-                    console.log(announcement.message.replace(/<[^>]*>?/gm, ''));
-                    console.log();
-                    return;
-                }
-                else console.log("[LOG] 구현안됨");
-            }
+            console.log("\n  📢 [ 최근 공지사항 ]");
+            console.log("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-            const allCourses = await lms.getCourses();
-            const courseMap = {};
-            allCourses.forEach(c => courseMap[`course_${c.id}`] = c.name);
-
-            let searchParams = new URLSearchParams({
-                "per_page": "10",
-                "page": "1",
-                "start_date": "1900-01-01",
-                "end_date": (new Date()).toISOString()
-            }).toString();
-
-            if (courseId) {
-                searchParams += `&context_codes[]=course_${courseId}`;
-            }
-            else {
-                allCourses.forEach(x => searchParams += `&context_codes[]=course_${x.id}`);
-            }
-
-            const response = await lms.client.get("https://mylms.korea.ac.kr/api/v1/announcements?" + searchParams);
-            announcements = response.data;
-
-            this.announcementsCache = announcements;
-
-            if (announcements.length === 0) {
-                console.log("\x1b[33m[INFO]\x1b[0m No announcements found.");
+            if (!items || items.length === 0) {
+                console.log("  📭 새로운 공지사항이 없습니다.");
             } else {
-                console.log("\n\x1b[1m\x1b[36m" + "=".repeat(120) + "\x1b[0m");
-                console.log("\x1b[1m\x1b[36m   ID       | STATUS | COURSE NAME          | TITLE                                              | AUTHOR     | DATE\x1b[0m");
-                console.log("\x1b[1m\x1b[36m" + "=".repeat(120) + "\x1b[0m");
+                items.forEach(item => {
+                    const date = new Date(item.created_at).toLocaleString('ko-KR', {
+                        month: 'numeric',
+                        day: 'numeric'
+                    });
 
-                announcements.forEach((announcement) => {
-                    const isNew = announcement.read_state === 'unread';
-                    const status = isNew ? "\x1b[41m\x1b[37m NEW \x1b[0m" : "     ";
-                    const date = formatDate(announcement.posted_at);
-                    const courseName = (courseMap[announcement.context_code] || "Unknown").substring(0, 20).padEnd(20);
-                    const title = announcement.title.length > 50 ? announcement.title.substring(0, 47) + "..." : announcement.title.padEnd(50);
-                    const author = (announcement.user_name || "Unknown").substring(0, 10).padEnd(10);
-                    const aid = announcement.id.toString().padEnd(8);
+                    const unreadIcon = item.unread ? "✨" : "  ";
+                    
+                    let courseName = item.course_name;
+                    if (courseName.length > 15) courseName = courseName.substring(0, 12) + "...";
 
-                    console.log(`\x1b[90m${aid}\x1b[0m | ${status} | \x1b[33m${courseName}\x1b[0m | \x1b[1m${title}\x1b[0m | \x1b[32m${author}\x1b[0m | \x1b[90m${date}\x1b[0m`);
+                    let title = item.title;
+                    if (title.length > 30) title = title.substring(0, 27) + "...";
+
+                    console.log(`  ${unreadIcon} [공지] ${title.padEnd(30)} | ${courseName.padEnd(15)} | ${item.user_name.padEnd(6)} | 📅 ${date}`);
                 });
-                console.log("\x1b[1m\x1b[36m" + "=".repeat(120) + "\x1b[0m\n");
             }
-            } catch (error) {
-                console.log("[ERROR] " + error.message);
-            }
-        } 
+
+            console.log("\n  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+        } catch (error) {
+            console.log("[ERROR] " + error.message);
+        }
+    }
 }
+
+//"course_id":88359,"course_name":"261R (\uc138\uc885-\ud559\ubd80)\ucef4\ud4e8\ud130\ub124\ud2b8\uc6cc\ud06c(\uc601\uac15)(COMPUTER NETWORK(English))-00\ubd84\ubc18","title":" Next Friday (03.April)\u2019s 9:00 AM in-class session","user_name":"\uc870\ubcd1\uc9c4","comment_count":null,"latest_comment_created_at":null,"view_count":84,"view_url":"https:\/\/mylms.korea.ac.kr\/courses\/88359\/discussion_topics\/375187","unread":true,"created_at":"2026-03-24T08:57:18.603019Z"
