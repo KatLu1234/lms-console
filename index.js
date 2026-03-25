@@ -7,9 +7,13 @@ const readlineSync = require('readline-sync');
 const cryption = require('./utils/cryption');
 const cheerio = require("cheerio");
 const keytar = require('keytar');
+const NodeCache = require('node-cache');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
+const qs = require('qs');
+const { request } = require('http');
+
 
 /**
  * LMS 과제 제출 프로그램을 위한 Playwright 클래스
@@ -53,7 +57,7 @@ class LMSConsole {
     }));
     this.config = new Conf({ projectName: 'lms-console' });
     this.studentNumber = "";
-    this.coursesCache = null;
+    this.cache = new NodeCache({ stdTTL: 3600 * 24 });
   }
 
   async login(username, password) {
@@ -200,24 +204,129 @@ class LMSConsole {
                 console.error('[Error] 로그인 실패: ', error.message);
                 if (error.response) console.log('에러 상태 코드:', error.response.status);
             }
-  }
 
-  async getCourses() {
+    }
+
+  async requestLearningXToken() {
     try {
-      if (this.coursesCache) return this.coursesCache;
-      const response = await this.client.get("https://mylms.korea.ac.kr/api/v1/users/self/favorites/courses?include[]=term&exclude[]=enrollments&sort=nickname");
-      this.coursesCache = response.data;
-      return response.data;
+      const res = await this.client.get("https://mylms.korea.ac.kr/accounts/1/external_tools/9?launch_type=global_navigation");
+      let $ = cheerio.load(res.data);
+
+      const iframeSrc = $("iframe[id='post_message_forwarding']").attr("src");
+      const form = {};
+      const requestForm = $("form[id='tool_form']")
+        .find("input[type='hidden']")
+        .map((i, el) => {
+          form[el.attribs.name] = el.attribs.value;
+        });
+
+      const requestPostForward = await this.client.get(iframeSrc);
+      const requestToken = await this.client.post("https://mylms.korea.ac.kr/learningx/lti/dashboard", 
+        new URLSearchParams(form).toString(),
+        {
+          headers: { 
+            'Referer': res.request.res.responseUrl
+          }
+        }
+      )
+
+      if (requestToken.status === 200 && requestToken.headers['set-cookie'].find(c => c.includes('xn_api_token'))) {
+        this.cache.set("api_login", true);
+        return true;
+      }
+
     } catch (error) {
-      console.log("[ERROR] " + error.message);
+      console.log("[ERROR] requestLearningXToken: " + error.message);
     }
   }
 
-  async requestLearningXApi(method, path, params = {}) {
+  async requestLearningXApi(url, method = "GET", data = {}) {
 
-      
+    try {
+      const res = await this 
+        .client({
+          method: method,
+          url: `https://mylms.korea.ac.kr/learningx/api/v1/${url}`,
+          data: data,
+          headers: {
+            'Referer': 'https://mylms.korea.ac.kr/learningx/lti/dashboard',
+            'Authorization': 'Bearer ' + this.cookies.getCookiesSync("https://mylms.korea.ac.kr").find(c => c.key === 'xn_api_token').value,
+          },
+        });
+      return res.data;
+      } catch (error) {
+
+        if (error.response.status === 401) {
+
+          if (this.cache.get("api_login")) {
+            console.log("[ERROR] requestLearningXApi: ", error.message);
+          }
+        const res = await this.requestLearningXToken();
+        if (res) return await this.requestLearningXApi(url, method, data);
+        }
+        console.log("[ERROR] requestLearningXApi: ", error.message);
+      }
   }
 
+  async getCourses(terms=[]) {
+    try {
+      let url = "learn_activities/courses?";
+      if (terms.length === 0) {
+        const currentTerm = await this.getCurrentTerm();
+        terms.push(currentTerm);
+      }
+      terms.forEach(x => url += `term_ids[]=${x.id}&`);
+      const courseResponse = await this.requestLearningXApi(url);
+      const courses = courseResponse;
+
+      const courseCache = this.cache.get("courses") || [];
+      courseCache.push(...courses);
+      this.cache.set("courses", courseCache);
+      
+      return courses;
+    
+    } catch (error) {
+      console.log("[ERROR] getCourses: " + error.message);
+    }
+  }
+
+  async getTerms() {
+    try {
+      if (this.cache.get("terms")) return this.cache.get("terms");
+      const termResponse = await this.requestLearningXApi(`users/${this.studentNumber}/terms?include_invited_course_contained=true`);
+      const terms = termResponse["enrollment_terms"];
+      this.cache.set("terms", terms);
+      this.cache.set("default_term", terms.find(x => x.default));
+      return terms;
+    } catch (error) {
+      console.log("[ERROR] getTerms: " + error.message);
+    }
+  }
+
+  async getCurrentTerm() {
+    try {
+      const cachedTerm = this.cache.get("default_term");
+      if (cachedTerm) return cachedTerm;
+      
+      const terms = await this.getTerms();
+      return this.cache.get("default_term");
+    } catch (error) {
+      console.log("[ERROR] getCurrentTerm: " + error.message);
+    }
+  }
+
+  async getTodos(term_id) {
+    if (!term_id) {
+      const currentTerm = await this.getCurrentTerm();
+      term_id = currentTerm.id;
+    }
+    try {
+      const todos = await this.requestLearningXApi(`learn_activities/to_dos?term_ids[]=${term_id}`);
+      return todos;
+    } catch (error) {
+      console.log("[ERROR] getTodos: " + error.message);
+    }
+  }
 }
 
 async function main() {
@@ -231,9 +340,8 @@ async function main() {
   console.log();
   console.log('login => kulms 로그인');
   console.log('planner => 남은 과제 및 일정');
-  console.log('autologin => 자동 로그인 설정');
-  console.log('assignments => 남은 과제');
-  console.log('notice <강의 id> => 해당 강의의 공지 확인 (ex) notice 123456, notice 123456 <공지사항 id>');
+  console.log('notice => 최근 공지사항');
+  console.log('todos => 남은 동영상 및 과제');
   console.log('courses => 강의 목록 (id 확인할 때 사용)');
   console.log('cnickname => nickname 으로 강의 id 저장, nickname을 강의 id 대신 사용할 수 있음 (id 는 courses 명령어 입력으로 확인) ex) cnickname algorithm 88358');
   console.log();
