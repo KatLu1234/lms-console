@@ -17,6 +17,8 @@ npm이 설치되었다면, repository 폴더에 들어가서 다음 명령어를
 
 `npm install`
 
+`npm link`
+
 `npm install -g .`
 
 
